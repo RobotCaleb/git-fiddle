@@ -23,11 +23,44 @@ FIDDLE_MESSAGE="$(cat <<-'EOF'
 EOF
 )"
 
-# process the '--no-fiddle-messages' option
-GIT_PRETTY_FORMAT=$'--format=%ad by: %an <%ae>\n%s\n\n%b'
-if [ "${GIT_FIDDLE_MSG-true}" = false ]; then
-	GIT_PRETTY_FORMAT=$'--format=%ad by: %an <%ae>'
-fi
+function trim () {
+	echo "$1" | sed -e '
+		s/^[[:space:]]*//
+		s/[[:space:]]*$//
+	'
+}
+
+function create_git_pretty_format () {
+	local format=
+
+	# --[no-]fiddle-author
+	if ! [ "$GIT_FIDDLE_AUTHOR" = false ]; then
+		format="$(trim "$format %an")"
+	fi
+
+	# --[no-]fiddle-date
+	if ! [ "$GIT_FIDDLE_DATE" = false ]; then
+		local x=
+		if [ ! -z "$format" ]; then x="$x("; fi
+		x="${x}%ad"
+		if [ ! -z "$format" ]; then x="$x)"; fi
+		format="$(trim "$format $x")"
+	fi
+
+	# --[no-]fiddle-subject
+	if ! [ "$GIT_FIDDLE_SUBJECT" = false ]; then
+		format="$(trim "$format> %s")"
+	fi
+
+	# --[no-]fiddle-body
+	if ! [ "$GIT_FIDDLE_BODY" = false ]; then
+		format="$(trim "$format"$'\n%b')"
+	fi
+
+	echo "$format"
+}
+
+GIT_PRETTY_FORMAT="--format=$(create_git_pretty_format)"
 
 function prepare () {
 	while read -r line; do
@@ -35,8 +68,9 @@ function prepare () {
 			printf "%s\n" "$line"
 		else
 			read -r action sha rest < <(echo "$line")
-			printf "%s %s %s\n\n" "$action" "$sha" \
-				"$(git --no-pager show -s "$sha" "$GIT_PRETTY_FORMAT")"
+			printf "%s %s %s\n" "$action" "$sha" \
+				"$(git --no-pager show -s "$sha" "$GIT_PRETTY_FORMAT" | \
+					git stripspace)"
 		fi
 	done < "$1" > "$2"
 	echo "$FIDDLE_MESSAGE" >> "$2"
@@ -77,8 +111,9 @@ function emit () {
 function apply () {
 	set -eo pipefail
 
-	local scanning=false
-	mod_message=
+	local scanning_body=false
+	local mod_message=
+	local mod_subject=
 	declare -a mod_date mod_author
 
 	while read -r line; do
@@ -89,7 +124,7 @@ function apply () {
 			if [[ "$sha" =~ ^[0-9a-z]{6,}$ ]]; then
 
 				# flush the current scan
-				if $scanning; then
+				if $scanning_body; then
 					emit "${mod_author[*]}" "${mod_date[*]}" "$mod_message"
 				fi
 
@@ -97,29 +132,45 @@ function apply () {
 				echo "$action $sha"
 
 				# reset state
-				scanning=false
+				scanning_body=false
 				mod_message=
+				mod_subject=
 				unset mod_date mod_author
 				declare -a mod_date mod_author
 
 				# begin a fresh scan for 'pick' actions
 				if [[ "$action" == pick ]]; then
-					m=0
-					scanning=true
-					for col in $rest; do
-						if [[ "$col" == by: ]]; then m=1; else
-							case $m in
-								0) mod_date+=("$col"); ;;
-								1) mod_author+=("$col"); ;;
-							esac
-						fi
-					done
+					# parse author
+					# take until '(' if date is present
+					# or   until '>' if subject is present
+					# or   until EOL otherwise
+
+					# parse timestamp
+					# (optional) parse '('
+					# take until '(' if has parsed ')'
+
+					# parse subject line
+					# parse '>'
+					# take until EOL
+
+
+
+					# m=0
+					# for col in $rest; do
+					# 	if [[ "$col" == by: ]]; then m=1; else
+					# 		case $m in
+					# 			0) mod_date+=("$col"); ;;
+					# 			1) mod_author+=("$col"); ;;
+					# 		esac
+					# 	fi
+					# done
+					scanning_body=true
 					continue
 				fi
 			fi
 		fi
 
-		if $scanning; then
+		if $scanning_body; then
 			mod_message="$mod_message\n$line"
 		fi
 	done < <(git stripspace --strip-comments < "$1")
